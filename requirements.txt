@@ -3,5 +3,3 @@ aiohttp==3.9.3
 python-dotenv==1.0.1
 asyncio==3.4.3
 certifi==2024.2.2
-aiohttp-socks==0.8.4  # для поддержки SOCKS5 прокси
-redis==5.0.1          # если будете использовать Redis
