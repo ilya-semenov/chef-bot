@@ -1,91 +1,41 @@
 import asyncio
 import logging
-from aiogram import Bot, Dispatcher, types, F
+import sys
+import traceback
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import Message
 from aiogram.client.bot import DefaultBotProperties
 from aiogram.enums import ParseMode
-
-# Правильный импорт для прокси
-from aiohttp import ClientSession
-from aiohttp_socks import ProxyConnector
-
-from config import BOT_TOKEN, USE_PROXY, PROXY_TYPE, PROXY_HOST, PROXY_PORT, PROXY_USERNAME, PROXY_PASSWORD
-from deepseek_integration import get_cooking_advice, get_nutrition_info, get_recipe_recommendations
+from config import BOT_TOKEN, DEEPSEEK_API_KEY
+from deepseek_integration import get_cooking_advice
 from database import Database
-import ssl
-import certifi
+import os
+
+# Глобальный обработчик исключений
+def global_exception_handler(exc_type, exc_value, exc_traceback):
+    logging.error("Необработанное исключение", exc_info=(exc_type, exc_value, exc_traceback))
+
+sys.excepthook = global_exception_handler
 
 # Настройка логирования
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 # Инициализация базы данных
 db = Database()
 
-# Состояния для FSM
-class RecipeStates(StatesGroup):
-    waiting_for_recipe_name = State()
-    waiting_for_save_name = State()
-    waiting_for_ingredients = State()
-    waiting_for_calorie_goal = State()
+# Создаем бота БЕЗ ПРОКСИ
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
+dp = Dispatcher()
 
-# Функция для создания бота с прокси или без
-async def create_bot():
-    """Создает бота с прокси или без"""
-    if USE_PROXY:
-        try:
-            # Формируем URL прокси
-            proxy_url = f"{PROXY_TYPE}://"
-            if PROXY_USERNAME and PROXY_PASSWORD:
-                proxy_url += f"{PROXY_USERNAME}:{PROXY_PASSWORD}@"
-            proxy_url += f"{PROXY_HOST}:{PROXY_PORT}"
-            
-            logging.info(f"Попытка подключения через прокси: {proxy_url}")
-            
-            # Создаем connector с прокси
-            connector = ProxyConnector.from_url(proxy_url)
-            
-            # Создаем сессию с прокси
-            session = ClientSession(connector=connector)
-            
-            # Создаем бота с сессией
-            bot = Bot(
-                token=BOT_TOKEN, 
-                session=session,
-                default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-            )
-            
-            logging.info("✅ Бот успешно подключен через прокси")
-            return bot
-        except Exception as e:
-            logging.error(f"❌ Ошибка подключения через прокси: {e}")
-            logging.info("Запуск без прокси...")
-            return create_bot_without_proxy()
-    else:
-        return create_bot_without_proxy()
-
-def create_bot_without_proxy():
-    """Создает бота без прокси"""
-    bot = Bot(
-        token=BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-    )
-    logging.info("✅ Бот запущен без прокси")
-    return bot
-
-# Функция для проверки подключения
-async def test_connection(bot: Bot):
-    """Тестирует подключение к Telegram API"""
-    try:
-        me = await bot.get_me()
-        logging.info(f"✅ Бот @{me.username} успешно подключен к Telegram API")
-        return True
-    except Exception as e:
-        logging.error(f"❌ Ошибка подключения к Telegram API: {e}")
-        return False
+# Словарь для хранения имен пользователей (как резервное копирование к БД)
+user_names_cache = {}
 
 # Приветственное сообщение
 WELCOME_MESSAGE = """
@@ -93,15 +43,7 @@ WELCOME_MESSAGE = """
 
 Я специализируюсь на здоровом питании и помогу тебе приготовить любое блюдо максимально полезным способом, сохраняя великолепный вкус.
 
-Меня всему научил мой замечательный шеф и друг Семенов Илья.
-
-Что я умею:
-🍳 Давать рецепты с учетом твоих целей
-📊 Рассчитывать калорийность и питательную ценность
-❤️ Сохранять твои любимые рецепты
-🔍 Искать рецепты по ингредиентам
-📋 Составлять меню на неделю
-⚖️ Помогать с диетическим питанием
+Меня всему научил мой хороший и замечательный друг Семенов Илья.
 
 Как тебя зовут? Напиши свое имя, чтобы я мог к тебе обращаться.
 """
@@ -109,26 +51,17 @@ WELCOME_MESSAGE = """
 HELP_MESSAGE = """
 🍳 Команды бота:
 
-Основные команды:
 /start - Начать работу
 /help - Показать это сообщение
 /about - О боте
-
-Рецепты:
 /recipe [название] - Получить рецепт блюда
-/save - Сохранить текущий рецепт в избранное
-/myrecipes - Показать сохраненные рецепты
 /random - Случайный рецепт
-
-Питание и диеты:
 /calories [продукт] - Узнать калорийность
-/diet [цель] - Подобрать диету
-/mealplan - Составить меню на неделю
-/ingredients [ингредиенты] - Найти рецепты по ингредиентам
+/tip - Получить совет шефа
 
-Советы:
-/tip - Получить совет шеф-повара
-/substitute [ингредиент] - Чем заменить продукт
+Примеры:
+/recipe куриная грудка
+/calories яблоко
 """
 
 ABOUT_MESSAGE = """
@@ -138,200 +71,237 @@ ABOUT_MESSAGE = """
 Создан на базе DeepSeek AI
 Использует опыт профессионального шеф-повара с 20-летним стажем
 
-Меня всему научил мой замечательный шеф и друг Семенов Илья.
-
-Функции:
-• Интеграция с DeepSeek AI
-• База данных рецептов SQLite
-• Калькулятор калорий
-• Планировщик питания
+Меня всему научил мой хороший и замечательный друг Семенов Илья.
 
 Приятного аппетита! 🍽️
 """
 
-# Клавиатуры
-def get_main_keyboard():
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🍳 Случайный рецепт", callback_data="random_recipe")],
-        [InlineKeyboardButton(text="📋 Мои рецепты", callback_data="my_recipes")],
-        [InlineKeyboardButton(text="📊 Расчет калорий", callback_data="calculate_calories")],
-        [InlineKeyboardButton(text="💡 Совет шефа", callback_data="chef_tip")],
-        [InlineKeyboardButton(text="📅 Меню на неделю", callback_data="weekly_menu")]
-    ])
-    return keyboard
-
-async def main():
-    """Основная функция запуска бота"""
-    # Инициализация БД
-    db.init_db()
+@dp.message(Command("start"))
+async def cmd_start(message: Message):
+    """Обработчик команды /start"""
+    user_id = message.from_user.id
+    username = message.from_user.username
     
-    # Создаем бота
-    bot = await create_bot()
-    
-    # Проверяем подключение
-    if not await test_connection(bot):
-        logging.error("❌ Не удалось подключиться к Telegram API. Проверьте прокси или интернет.")
-        return
-    
-    # Создаем диспетчер
-    storage = MemoryStorage()
-    dp = Dispatcher(storage=storage)
-    
-    # Регистрируем обработчики
-    @dp.message(Command("start"))
-    async def cmd_start(message: Message, state: FSMContext):
-        """Обработчик команды /start"""
-        user_id = message.from_user.id
-        username = message.from_user.username
-        
+    try:
         # Добавляем пользователя в БД если его нет
         db.add_user(user_id, username)
-        
+        logging.info(f"Пользователь {user_id} запустил бота")
         await message.answer(WELCOME_MESSAGE)
+    except Exception as e:
+        logging.error(f"Ошибка в /start: {e}")
+        await message.answer("Привет! 👨‍🍳 Я твой повар-бот. Напиши свое имя, чтобы продолжить.")
 
-    @dp.message(Command("help"))
-    async def cmd_help(message: Message):
-        """Обработчик команды /help"""
-        await message.answer(HELP_MESSAGE)
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
+    """Обработчик команды /help"""
+    await message.answer(HELP_MESSAGE)
 
-    @dp.message(Command("about"))
-    async def cmd_about(message: Message):
-        """Обработчик команды /about"""
-        await message.answer(ABOUT_MESSAGE)
+@dp.message(Command("about"))
+async def cmd_about(message: Message):
+    """Обработчик команды /about"""
+    await message.answer(ABOUT_MESSAGE)
 
-    @dp.message(Command("recipe"))
-    async def cmd_recipe(message: Message, state: FSMContext):
-        """Получение рецепта по названию"""
-        await bot.send_chat_action(message.chat.id, action="typing")
-        
-        parts = message.text.split(maxsplit=1)
-        if len(parts) < 2:
-            await message.answer("Напиши название блюда после команды. Например: /recipe куриная грудка")
-            return
-        
-        dish_name = parts[1]
+@dp.message(Command("recipe"))
+async def cmd_recipe(message: Message):
+    """Получение рецепта по названию"""
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Напиши название блюда после команды. Например: /recipe куриная грудка")
+        return
+    
+    dish_name = parts[1]
+    
+    # Показываем, что бот печатает
+    await bot.send_chat_action(message.chat.id, action="typing")
+    
+    # Получаем имя пользователя из БД
+    try:
         user_data = db.get_user(message.from_user.id)
-        user_name = user_data['name'] if user_data and user_data['name'] else None
-        
-        # Запускаем фоновую обработку
-        asyncio.create_task(process_recipe_request(message, state, dish_name, user_name))
+        user_name = user_data['name'] if user_data and user_data.get('name') else None
+    except:
+        user_name = user_names_cache.get(message.from_user.id)
+    
+    # Запускаем фоновую задачу для получения рецепта
+    asyncio.create_task(process_recipe_request(message, dish_name, user_name))
 
-    @dp.message(Command("random"))
-    async def cmd_random(message: Message):
-        """Случайный рецепт"""
-        await bot.send_chat_action(message.chat.id, action="typing")
-        
-        random_dishes = ["паста карбонара", "цезарь с курицей", "овощное рагу", "рыба на пару", "греческий салат"]
-        import random
-        dish = random.choice(random_dishes)
-        
-        response = await get_cooking_advice(dish, db.get_user(message.from_user.id)['name'])
-        await message.answer(f"🍽 Случайный рецепт: {dish}\n\n{response}")
+@dp.message(Command("random"))
+async def cmd_random(message: Message):
+    """Случайный рецепт"""
+    await bot.send_chat_action(message.chat.id, action="typing")
+    
+    random_dishes = [
+        "паста карбонара", 
+        "цезарь с курицей", 
+        "овощное рагу", 
+        "рыба на пару", 
+        "греческий салат",
+        "куриная грудка с овощами",
+        "омлет с помидорами",
+        "тыквенный суп"
+    ]
+    import random
+    dish = random.choice(random_dishes)
+    
+    # Получаем имя пользователя
+    try:
+        user_data = db.get_user(message.from_user.id)
+        user_name = user_data['name'] if user_data and user_data.get('name') else None
+    except:
+        user_name = user_names_cache.get(message.from_user.id)
+    
+    response = await get_cooking_advice(dish, user_name)
+    await message.answer(f"🍽 Случайный рецепт: {dish}\n\n{response}")
 
-    @dp.message(Command("calories"))
-    async def cmd_calories(message: Message):
-        """Узнать калорийность продукта"""
-        parts = message.text.split(maxsplit=1)
-        if len(parts) < 2:
-            await message.answer("Напиши продукт после команды. Например: /calories яблоко")
-            return
-        
-        food = parts[1]
-        await bot.send_chat_action(message.chat.id, action="typing")
-        
-        nutrition_info = await get_nutrition_info(food)
-        await message.answer(nutrition_info)
+@dp.message(Command("calories"))
+async def cmd_calories(message: Message):
+    """Узнать калорийность продукта"""
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Напиши продукт после команды. Например: /calories яблоко")
+        return
+    
+    food = parts[1]
+    await bot.send_chat_action(message.chat.id, action="typing")
+    
+    nutrition_info = await get_nutrition_info(food)
+    await message.answer(nutrition_info)
 
-    @dp.message(Command("tip"))
-    async def cmd_tip(message: Message):
-        """Получить совет шефа"""
-        await bot.send_chat_action(message.chat.id, action="typing")
-        
-        tips = [
-            "🥕 Нарезай овощи непосредственно перед приготовлением, чтобы сохранить максимум витаминов",
-            "🔥 Не перегревай масло - оно начинает выделять канцерогены",
-            "🧂 Соли блюда в конце приготовления, чтобы сохранить сочность",
-            "🌿 Используй свежие травы вместо соли для аромата",
-            "💧 Замачивай крупы перед варкой - это уменьшает время готовки и сохраняет питательные вещества"
-        ]
-        import random
-        tip = random.choice(tips)
-        
-        await message.answer(f"💡 Совет шефа:\n{tip}\n\nМеня всему научил мой замечательный шеф и друг Семенов Илья.")
+@dp.message(Command("tip"))
+async def cmd_tip(message: Message):
+    """Получить совет шефа"""
+    await bot.send_chat_action(message.chat.id, action="typing")
+    
+    tips = [
+        "🥕 Нарезай овощи непосредственно перед приготовлением, чтобы сохранить максимум витаминов",
+        "🔥 Не перегревай масло - оно начинает выделять канцерогены",
+        "🧂 Соли блюда в конце приготовления, чтобы сохранить сочность",
+        "🌿 Используй свежие травы вместо соли для аромата",
+        "💧 Замачивай крупы перед варкой - это уменьшает время готовки и сохраняет питательные вещества",
+        "🍋 Лимонный сок может заменить соль в салатах",
+        "🥑 Авокадо - отличная замена майонезу в бутербродах"
+    ]
+    import random
+    tip = random.choice(tips)
+    
+    await message.answer(f"💡 Совет шефа:\n{tip}\n\nМеня всему научил мой хороший и замечательный друг Семенов Илья.")
 
-    @dp.message()
-    async def handle_message(message: Message, state: FSMContext):
-        """Обработчик обычных текстовых сообщений"""
-        user_id = message.from_user.id
-        user_data = db.get_user(user_id)
-        
+@dp.message()
+async def handle_message(message: Message):
+    """Обработчик обычных текстовых сообщений"""
+    user_id = message.from_user.id
+    
+    try:
         # Сразу показываем, что бот печатает
         await bot.send_chat_action(message.chat.id, action="typing")
         
+        # Получаем данные пользователя из БД
+        user_data = None
+        try:
+            user_data = db.get_user(user_id)
+        except Exception as e:
+            logging.error(f"Ошибка получения пользователя из БД: {e}")
+        
         # Проверяем, не ввел ли пользователь имя
-        if not user_data or not user_data['name']:
-            if len(message.text) < 30:
-                # Сохраняем имя пользователя
-                db.update_user_name(user_id, message.text.strip())
+        if (not user_data or not user_data.get('name')) and user_id not in user_names_cache:
+            if len(message.text) < 30 and not any(word in message.text.lower() for word in ['приготовить', 'рецепт', 'блюдо', 'как']):
+                # Сохраняем имя пользователя в кеш
+                user_names_cache[user_id] = message.text.strip()
+                
+                # Пытаемся сохранить в БД
+                try:
+                    db.update_user_name(user_id, message.text.strip())
+                except Exception as e:
+                    logging.error(f"Ошибка сохранения имени в БД: {e}")
+                
                 await message.answer(
                     f"Приятно познакомиться, {message.text.strip()}! "
-                    f"Теперь ты можешь спрашивать меня о любых блюдах.\n\n"
-                    f"Вот что я умею:",
-                    reply_markup=get_main_keyboard()
+                    f"Теперь ты можешь спрашивать меня о любых блюдах. Что хочешь приготовить?"
                 )
                 return
         
-        # Если это запрос на рецепт
-        if any(word in message.text.lower() for word in ['приготовить', 'рецепт', 'как готовить']):
-            asyncio.create_task(process_recipe_request(
-                message, state, message.text, 
-                user_data['name'] if user_data else None
-            ))
-        else:
-            # Если не знаем, что ответить, показываем меню
-            await message.answer(
-                f"Я не совсем понял запрос. Вот что я могу сделать:",
-                reply_markup=get_main_keyboard()
-            )
-
-    async def process_recipe_request(message: Message, state: FSMContext, query: str, user_name: str = None):
-        """Фоновая обработка запроса рецепта"""
-        try:
-            response = await get_cooking_advice(query, user_name)
-            await state.update_data(last_recipe=query, last_response=response)
-            
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="❤️ Сохранить рецепт", callback_data="save_recipe")]
-            ])
-            
-            await message.answer(response, reply_markup=keyboard)
-        except Exception as e:
-            logging.error(f"Ошибка при получении рецепта: {e}")
-            await message.answer("😔 Извини, произошла ошибка при получении рецепта. Попробуй позже.")
-
-    @dp.callback_query()
-    async def handle_callback(callback: CallbackQuery, state: FSMContext):
-        """Обработка нажатий на кнопки"""
-        await bot.answer_callback_query(callback.id)
+        # Получаем имя из кеша или БД
+        user_name = user_names_cache.get(user_id)
+        if not user_name and user_data:
+            user_name = user_data.get('name')
         
-        if callback.data == "random_recipe":
-            await cmd_random(callback.message)
-        elif callback.data == "calculate_calories":
-            await callback.message.answer("Напиши /calories [название продукта] чтобы узнать калорийность")
-        elif callback.data == "chef_tip":
-            await cmd_tip(callback.message)
-        elif callback.data == "save_recipe":
-            data = await state.get_data()
-            if data.get('last_recipe'):
-                await state.set_state(RecipeStates.waiting_for_save_name)
-                await callback.message.answer("Введи название для сохранения рецепта:")
+        # Если это запрос на рецепт
+        if any(word in message.text.lower() for word in ['приготовить', 'рецепт', 'как готовить', 'научи']):
+            await bot.send_chat_action(message.chat.id, action="typing")
+            asyncio.create_task(process_recipe_request(message, message.text, user_name))
+        else:
+            # Если не знаем, что ответить, предлагаем помощь
+            await message.answer(
+                f"Я не совсем понял запрос. Используй /help чтобы увидеть список команд, или просто напиши название блюда, которое хочешь приготовить."
+            )
+            
+    except Exception as e:
+        logging.error(f"Ошибка в обработчике сообщений: {e}")
+        traceback.print_exc()
+        await message.answer(
+            "😔 Извини, произошла ошибка. Попробуй позже или используй /help для просмотра команд."
+        )
 
-    # Запускаем бота
+async def process_recipe_request(message: Message, query: str, user_name: str = None):
+    """Фоновая обработка запроса рецепта"""
     try:
-        logging.info("🚀 Бот запускается...")
+        response = await get_cooking_advice(query, user_name)
+        
+        # Разбиваем длинное сообщение на части
+        if len(response) > 4096:
+            for i in range(0, len(response), 4096):
+                await message.answer(response[i:i+4096])
+        else:
+            await message.answer(response)
+            
+    except Exception as e:
+        logging.error(f"Ошибка при получении рецепта: {e}")
+        await message.answer("😔 Извини, не удалось получить рецепт. Попробуй еще раз или напиши другое блюдо.")
+
+async def get_nutrition_info(food: str) -> str:
+    """Получение информации о питательной ценности продукта"""
+    nutrition_db = {
+        "яблоко": "🍎 Яблоко (100г): 52 ккал, белки 0.3г, жиры 0.2г, углеводы 14г",
+        "банан": "🍌 Банан (100г): 96 ккал, белки 1.5г, жиры 0.2г, углеводы 22г",
+        "курица": "🍗 Куриная грудка (100г): 165 ккал, белки 31г, жиры 3.6г, углеводы 0г",
+        "рис": "🍚 Рис вареный (100г): 130 ккал, белки 2.7г, жиры 0.3г, углеводы 28г",
+        "гречка": "🌾 Гречка вареная (100г): 110 ккал, белки 4.2г, жиры 1.1г, углеводы 21г",
+        "картофель": "🥔 Картофель вареный (100г): 86 ккал, белки 1.7г, жиры 0.1г, углеводы 20г",
+        "брокколи": "🥦 Брокколи (100г): 34 ккал, белки 2.8г, жиры 0.4г, углеводы 7г"
+    }
+    
+    food_lower = food.lower()
+    for key in nutrition_db:
+        if key in food_lower:
+            return nutrition_db[key]
+    
+    return f"🍽 Информация о {food}:\nЯ не нашел точных данных, но в среднем продукты этой категории содержат 50-200 ккал на 100г."
+
+async def main():
+    """Основная функция запуска бота"""
+    try:
+        # Инициализация БД
+        db.init_db()
+        logging.info("✅ База данных инициализирована")
+        
+        # Проверяем токен
+        if not BOT_TOKEN or BOT_TOKEN == "ваш_токен_бота_сюда":
+            logging.error("❌ Токен бота не указан в config.py или .env")
+            return
+        
+        logging.info(f"🚀 Бот запускается...")
+        
+        # Запускаем бота
         await dp.start_polling(bot)
-    finally:
-        await bot.session.close()
+        
+    except Exception as e:
+        logging.error(f"❌ Критическая ошибка при запуске: {e}")
+        traceback.print_exc()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Бот остановлен пользователем")
+    except Exception as e:
+        logging.error(f"Критическая ошибка: {e}")
+        traceback.print_exc()
