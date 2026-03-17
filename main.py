@@ -34,8 +34,10 @@ bot = Bot(
 )
 dp = Dispatcher()
 
-# Словарь для хранения имен пользователей (как резервное копирование к БД)
-user_names_cache = {}
+# Словарь для хранения состояния пользователей
+# None - имя не спрашивали, waiting_name - ждем имя, has_name - имя уже есть
+user_states = {}
+user_names = {}
 
 # Приветственное сообщение
 WELCOME_MESSAGE = """
@@ -51,7 +53,7 @@ WELCOME_MESSAGE = """
 HELP_MESSAGE = """
 🍳 Команды бота:
 
-/start - Начать работу
+/start - Начать работу (спросит имя)
 /help - Показать это сообщение
 /about - О боте
 /recipe [название] - Получить рецепт блюда
@@ -62,6 +64,8 @@ HELP_MESSAGE = """
 Примеры:
 /recipe куриная грудка
 /calories яблоко
+
+Или просто напиши название блюда, например: "Как приготовить борщ?"
 """
 
 ABOUT_MESSAGE = """
@@ -80,16 +84,12 @@ ABOUT_MESSAGE = """
 async def cmd_start(message: Message):
     """Обработчик команды /start"""
     user_id = message.from_user.id
-    username = message.from_user.username
     
-    try:
-        # Добавляем пользователя в БД если его нет
-        db.add_user(user_id, username)
-        logging.info(f"Пользователь {user_id} запустил бота")
-        await message.answer(WELCOME_MESSAGE)
-    except Exception as e:
-        logging.error(f"Ошибка в /start: {e}")
-        await message.answer("Привет! 👨‍🍳 Я твой повар-бот. Напиши свое имя, чтобы продолжить.")
+    # Устанавливаем состояние "ждем имя"
+    user_states[user_id] = "waiting_name"
+    
+    logging.info(f"Пользователь {user_id} запустил бота, ждем имя")
+    await message.answer(WELCOME_MESSAGE)
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
@@ -104,6 +104,14 @@ async def cmd_about(message: Message):
 @dp.message(Command("recipe"))
 async def cmd_recipe(message: Message):
     """Получение рецепта по названию"""
+    user_id = message.from_user.id
+    
+    # Проверяем, знаем ли мы имя пользователя
+    if user_id not in user_names:
+        user_states[user_id] = "waiting_name"
+        await message.answer("Сначала напиши свое имя, чтобы я мог к тебе обращаться! Как тебя зовут?")
+        return
+    
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         await message.answer("Напиши название блюда после команды. Например: /recipe куриная грудка")
@@ -114,12 +122,8 @@ async def cmd_recipe(message: Message):
     # Показываем, что бот печатает
     await bot.send_chat_action(message.chat.id, action="typing")
     
-    # Получаем имя пользователя из БД
-    try:
-        user_data = db.get_user(message.from_user.id)
-        user_name = user_data['name'] if user_data and user_data.get('name') else None
-    except:
-        user_name = user_names_cache.get(message.from_user.id)
+    # Получаем имя пользователя
+    user_name = user_names.get(user_id)
     
     # Запускаем фоновую задачу для получения рецепта
     asyncio.create_task(process_recipe_request(message, dish_name, user_name))
@@ -127,6 +131,14 @@ async def cmd_recipe(message: Message):
 @dp.message(Command("random"))
 async def cmd_random(message: Message):
     """Случайный рецепт"""
+    user_id = message.from_user.id
+    
+    # Проверяем, знаем ли мы имя пользователя
+    if user_id not in user_names:
+        user_states[user_id] = "waiting_name"
+        await message.answer("Сначала напиши свое имя, чтобы я мог к тебе обращаться! Как тебя зовут?")
+        return
+    
     await bot.send_chat_action(message.chat.id, action="typing")
     
     random_dishes = [
@@ -142,19 +154,21 @@ async def cmd_random(message: Message):
     import random
     dish = random.choice(random_dishes)
     
-    # Получаем имя пользователя
-    try:
-        user_data = db.get_user(message.from_user.id)
-        user_name = user_data['name'] if user_data and user_data.get('name') else None
-    except:
-        user_name = user_names_cache.get(message.from_user.id)
-    
+    user_name = user_names.get(user_id)
     response = await get_cooking_advice(dish, user_name)
     await message.answer(f"🍽 Случайный рецепт: {dish}\n\n{response}")
 
 @dp.message(Command("calories"))
 async def cmd_calories(message: Message):
     """Узнать калорийность продукта"""
+    user_id = message.from_user.id
+    
+    # Проверяем, знаем ли мы имя пользователя
+    if user_id not in user_names:
+        user_states[user_id] = "waiting_name"
+        await message.answer("Сначала напиши свое имя, чтобы я мог к тебе обращаться! Как тебя зовут?")
+        return
+    
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         await message.answer("Напиши продукт после команды. Например: /calories яблоко")
@@ -169,6 +183,14 @@ async def cmd_calories(message: Message):
 @dp.message(Command("tip"))
 async def cmd_tip(message: Message):
     """Получить совет шефа"""
+    user_id = message.from_user.id
+    
+    # Проверяем, знаем ли мы имя пользователя
+    if user_id not in user_names:
+        user_states[user_id] = "waiting_name"
+        await message.answer("Сначала напиши свое имя, чтобы я мог к тебе обращаться! Как тебя зовут?")
+        return
+    
     await bot.send_chat_action(message.chat.id, action="typing")
     
     tips = [
@@ -183,68 +205,102 @@ async def cmd_tip(message: Message):
     import random
     tip = random.choice(tips)
     
-    await message.answer(f"💡 Совет шефа:\n{tip}\n\nМеня всему научил мой хороший и замечательный друг Семенов Илья.")
+    user_name = user_names.get(user_id)
+    name_greeting = f", {user_name}" if user_name else ""
+    
+    await message.answer(f"💡 Совет шефа для тебя{name_greeting}:\n{tip}\n\nМеня всему научил мой хороший и замечательный друг Семенов Илья.")
 
 @dp.message()
 async def handle_message(message: Message):
     """Обработчик обычных текстовых сообщений"""
     user_id = message.from_user.id
+    text = message.text.strip()
     
     try:
-        # Сразу показываем, что бот печатает
-        await bot.send_chat_action(message.chat.id, action="typing")
-        
-        # Получаем данные пользователя из БД
-        user_data = None
-        try:
-            user_data = db.get_user(user_id)
-        except Exception as e:
-            logging.error(f"Ошибка получения пользователя из БД: {e}")
-        
-        # Проверяем, не ввел ли пользователь имя
-        if (not user_data or not user_data.get('name')) and user_id not in user_names_cache:
-            if len(message.text) < 30 and not any(word in message.text.lower() for word in ['приготовить', 'рецепт', 'блюдо', 'как']):
-                # Сохраняем имя пользователя в кеш
-                user_names_cache[user_id] = message.text.strip()
+        # Проверяем состояние пользователя
+        if user_id in user_states and user_states[user_id] == "waiting_name":
+            # Пользователь должен ввести имя
+            if len(text) < 30 and not any(word in text.lower() for word in ['рецепт', 'блюдо', 'как', 'приготовить', '/']):
+                # Сохраняем имя
+                user_names[user_id] = text
+                user_states[user_id] = "has_name"
                 
-                # Пытаемся сохранить в БД
+                # Сохраняем в БД
                 try:
-                    db.update_user_name(user_id, message.text.strip())
+                    db.add_user(user_id, message.from_user.username)
+                    db.update_user_name(user_id, text)
                 except Exception as e:
                     logging.error(f"Ошибка сохранения имени в БД: {e}")
                 
                 await message.answer(
-                    f"Приятно познакомиться, {message.text.strip()}! "
-                    f"Теперь ты можешь спрашивать меня о любых блюдах. Что хочешь приготовить?"
+                    f"Приятно познакомиться, {text}! 👋\n\n"
+                    f"Теперь ты можешь спрашивать меня о любых блюдах. Например:\n"
+                    f"• Как приготовить куриную грудку?\n"
+                    f"• Рецепт борща\n"
+                    f"• Омлет с овощами\n\n"
+                    f"Что хочешь приготовить сегодня?"
+                )
+                return
+            else:
+                # То, что написал пользователь, не похоже на имя
+                await message.answer(
+                    "Я не совсем понял. Напиши, пожалуйста, свое имя (просто имя, без лишних слов):\n\n"
+                    "Например: Анна, Иван, Мария..."
                 )
                 return
         
-        # Получаем имя из кеша или БД
-        user_name = user_names_cache.get(user_id)
-        if not user_name and user_data:
-            user_name = user_data.get('name')
+        # Если имя уже есть, обрабатываем запрос
+        user_name = user_names.get(user_id)
         
-        # Если это запрос на рецепт
-        if any(word in message.text.lower() for word in ['приготовить', 'рецепт', 'как готовить', 'научи']):
+        # Показываем, что бот печатает
+        await bot.send_chat_action(message.chat.id, action="typing")
+        
+        # Проверяем, похоже ли сообщение на запрос о рецепте
+        recipe_keywords = ['рецепт', 'приготовить', 'как', 'блюдо', 'сварить', 'пожарить', 'испечь']
+        is_recipe_request = any(word in text.lower() for word in recipe_keywords) or len(text.split()) < 10
+        
+        if is_recipe_request:
+            # Это запрос на рецепт
             await bot.send_chat_action(message.chat.id, action="typing")
-            asyncio.create_task(process_recipe_request(message, message.text, user_name))
+            asyncio.create_task(process_recipe_request(message, text, user_name))
         else:
-            # Если не знаем, что ответить, предлагаем помощь
-            await message.answer(
-                f"Я не совсем понял запрос. Используй /help чтобы увидеть список команд, или просто напиши название блюда, которое хочешь приготовить."
-            )
+            # Если не похоже на рецепт, предлагаем помощь
+            if user_name:
+                await message.answer(
+                    f"{user_name}, я не совсем понял, что ты хочешь. 👨‍🍳\n\n"
+                    f"Ты можешь:\n"
+                    f"• Спросить рецепт (например: 'Как приготовить курицу?')\n"
+                    f"• Использовать команду /recipe с названием блюда\n"
+                    f"• Попросить случайный рецепт через /random\n"
+                    f"• Узнать калорийность через /calories\n\n"
+                    f"Что тебе интересно?"
+                )
+            else:
+                # Если вдруг нет имени (на всякий случай)
+                user_states[user_id] = "waiting_name"
+                await message.answer(
+                    "Привет! 👨‍🍳 Как тебя зовут? Напиши свое имя, чтобы мы могли познакомиться."
+                )
             
     except Exception as e:
         logging.error(f"Ошибка в обработчике сообщений: {e}")
         traceback.print_exc()
         await message.answer(
-            "😔 Извини, произошла ошибка. Попробуй позже или используй /help для просмотра команд."
+            "😔 Извини, произошла ошибка. Попробуй еще раз или используй /help для просмотра команд."
         )
 
 async def process_recipe_request(message: Message, query: str, user_name: str = None):
     """Фоновая обработка запроса рецепта"""
     try:
+        # Показываем, что бот печатает
+        await bot.send_chat_action(message.chat.id, action="typing")
+        
+        # Получаем ответ
         response = await get_cooking_advice(query, user_name)
+        
+        # Добавляем приветствие с именем если его нет в ответе
+        if user_name and f"{user_name}" not in response and "Привет" not in response[:20]:
+            response = f"{user_name}, вот рецепт, который ты просил:\n\n{response}"
         
         # Разбиваем длинное сообщение на части
         if len(response) > 4096:
@@ -266,7 +322,10 @@ async def get_nutrition_info(food: str) -> str:
         "рис": "🍚 Рис вареный (100г): 130 ккал, белки 2.7г, жиры 0.3г, углеводы 28г",
         "гречка": "🌾 Гречка вареная (100г): 110 ккал, белки 4.2г, жиры 1.1г, углеводы 21г",
         "картофель": "🥔 Картофель вареный (100г): 86 ккал, белки 1.7г, жиры 0.1г, углеводы 20г",
-        "брокколи": "🥦 Брокколи (100г): 34 ккал, белки 2.8г, жиры 0.4г, углеводы 7г"
+        "брокколи": "🥦 Брокколи (100г): 34 ккал, белки 2.8г, жиры 0.4г, углеводы 7г",
+        "яйцо": "🥚 Яйцо куриное (1 шт): 70 ккал, белки 6г, жиры 5г, углеводы 0.6г",
+        "творог": "🥛 Творог 5% (100г): 145 ккал, белки 21г, жиры 5г, углеводы 3г",
+        "говядина": "🥩 Говядина (100г): 187 ккал, белки 19г, жиры 12г, углеводы 0г"
     }
     
     food_lower = food.lower()
