@@ -7,10 +7,9 @@ from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.client.bot import DefaultBotProperties
 from aiogram.enums import ParseMode
-from config import BOT_TOKEN, DEEPSEEK_API_KEY
+from config import BOT_TOKEN
 from deepseek_integration import get_cooking_advice
 from database import Database
-import os
 
 # Глобальный обработчик исключений
 def global_exception_handler(exc_type, exc_value, exc_traceback):
@@ -27,7 +26,7 @@ logging.basicConfig(
 # Инициализация базы данных
 db = Database()
 
-# Создаем бота БЕЗ ПРОКСИ
+# Создаем бота
 bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -35,8 +34,7 @@ bot = Bot(
 dp = Dispatcher()
 
 # Словарь для хранения состояния пользователей
-# None - имя не спрашивали, waiting_name - ждем имя, has_name - имя уже есть
-user_states = {}
+user_states = {}  # None - имя не спрашивали, waiting_name - ждем имя, has_name - имя уже есть
 user_names = {}
 
 # Приветственное сообщение
@@ -44,8 +42,6 @@ WELCOME_MESSAGE = """
 Привет! 👨‍🍳 Я твой персональный шеф-повар с 20-летним опытом!
 
 Я специализируюсь на здоровом питании и помогу тебе приготовить любое блюдо максимально полезным способом, сохраняя великолепный вкус.
-
-Меня всему научил мой хороший и замечательный друг Семенов Илья.
 
 Как тебя зовут? Напиши свое имя, чтобы я мог к тебе обращаться.
 """
@@ -62,7 +58,7 @@ HELP_MESSAGE = """
 /tip - Получить совет шефа
 
 Примеры:
-/recipe куриная грудка
+/recipe куриная грудка, снизить калории
 /calories яблоко
 
 Или просто напиши название блюда, например: "Как приготовить борщ?"
@@ -75,7 +71,7 @@ ABOUT_MESSAGE = """
 Создан на базе DeepSeek AI
 Использует опыт профессионального шеф-повара с 20-летним стажем
 
-Меня всему научил мой хороший и замечательный друг Семенов Илья.
+Помогаю готовить вкусно и полезно, сохраняя все питательные вещества.
 
 Приятного аппетита! 🍽️
 """
@@ -114,7 +110,7 @@ async def cmd_recipe(message: Message):
     
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        await message.answer("Напиши название блюда после команды. Например: /recipe куриная грудка")
+        await message.answer("Напиши название блюда после команды. Например: /recipe куриная грудка, снизить калории")
         return
     
     dish_name = parts[1]
@@ -142,43 +138,19 @@ async def cmd_random(message: Message):
     await bot.send_chat_action(message.chat.id, action="typing")
     
     random_dishes = [
-        "паста карбонара", 
-        "цезарь с курицей", 
-        "овощное рагу", 
-        "рыба на пару", 
-        "греческий салат",
-        "куриная грудка с овощами",
-        "омлет с помидорами",
-        "тыквенный суп"
+        "паста карбонара, снизить калории", 
+        "цезарь с курицей, убрать вредные жиры", 
+        "овощное рагу, сохранить витамины", 
+        "рыба на пару, полезный ужин", 
+        "греческий салат, легкий обед",
+        "куриная грудка с овощами, снизить калории"
     ]
     import random
     dish = random.choice(random_dishes)
     
     user_name = user_names.get(user_id)
     response = await get_cooking_advice(dish, user_name)
-    await message.answer(f"🍽 Случайный рецепт: {dish}\n\n{response}")
-
-@dp.message(Command("calories"))
-async def cmd_calories(message: Message):
-    """Узнать калорийность продукта"""
-    user_id = message.from_user.id
-    
-    # Проверяем, знаем ли мы имя пользователя
-    if user_id not in user_names:
-        user_states[user_id] = "waiting_name"
-        await message.answer("Сначала напиши свое имя, чтобы я мог к тебе обращаться! Как тебя зовут?")
-        return
-    
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer("Напиши продукт после команды. Например: /calories яблоко")
-        return
-    
-    food = parts[1]
-    await bot.send_chat_action(message.chat.id, action="typing")
-    
-    nutrition_info = await get_nutrition_info(food)
-    await message.answer(nutrition_info)
+    await message.answer(f"🍽 Случайный рецепт:\n\n{response}")
 
 @dp.message(Command("tip"))
 async def cmd_tip(message: Message):
@@ -195,20 +167,20 @@ async def cmd_tip(message: Message):
     
     tips = [
         "🥕 Нарезай овощи непосредственно перед приготовлением, чтобы сохранить максимум витаминов",
-        "🔥 Не перегревай масло - оно начинает выделять канцерогены",
-        "🧂 Соли блюда в конце приготовления, чтобы сохранить сочность",
-        "🌿 Используй свежие травы вместо соли для аромата",
+        "🔥 Не перегревай масло - оно начинает выделять канцерогены. Точка дыма у оливкового масла ~180°C",
+        "🧂 Соли блюда в конце приготовления, чтобы сохранить сочность продуктов",
+        "🌿 Используй свежие травы вместо соли для аромата и пользы",
         "💧 Замачивай крупы перед варкой - это уменьшает время готовки и сохраняет питательные вещества",
-        "🍋 Лимонный сок может заменить соль в салатах",
-        "🥑 Авокадо - отличная замена майонезу в бутербродах"
+        "🍋 Лимонный сок может заменить соль в салатах и добавит витамин С",
+        "🥑 Авокадо - отличная замена майонезу в бутербродах и соусах"
     ]
     import random
     tip = random.choice(tips)
     
     user_name = user_names.get(user_id)
-    name_greeting = f", {user_name}" if user_name else ""
+    name_greeting = f"{user_name}, " if user_name else ""
     
-    await message.answer(f"💡 Совет шефа для тебя{name_greeting}:\n{tip}\n\nМеня всему научил мой хороший и замечательный друг Семенов Илья.")
+    await message.answer(f"{name_greeting}💡 Совет шефа:\n{tip}")
 
 @dp.message()
 async def handle_message(message: Message):
@@ -235,8 +207,8 @@ async def handle_message(message: Message):
                 await message.answer(
                     f"Приятно познакомиться, {text}! 👋\n\n"
                     f"Теперь ты можешь спрашивать меня о любых блюдах. Например:\n"
-                    f"• Как приготовить куриную грудку?\n"
-                    f"• Рецепт борща\n"
+                    f"• Как приготовить куриную грудку, снизить калории?\n"
+                    f"• Рецепт борща, сохранить витамины\n"
                     f"• Омлет с овощами\n\n"
                     f"Что хочешь приготовить сегодня?"
                 )
@@ -261,7 +233,6 @@ async def handle_message(message: Message):
         
         if is_recipe_request:
             # Это запрос на рецепт
-            await bot.send_chat_action(message.chat.id, action="typing")
             asyncio.create_task(process_recipe_request(message, text, user_name))
         else:
             # Если не похоже на рецепт, предлагаем помощь
@@ -269,14 +240,14 @@ async def handle_message(message: Message):
                 await message.answer(
                     f"{user_name}, я не совсем понял, что ты хочешь. 👨‍🍳\n\n"
                     f"Ты можешь:\n"
-                    f"• Спросить рецепт (например: 'Как приготовить курицу?')\n"
+                    f"• Спросить рецепт (например: 'Как приготовить курицу, снизить калории?')\n"
                     f"• Использовать команду /recipe с названием блюда\n"
                     f"• Попросить случайный рецепт через /random\n"
-                    f"• Узнать калорийность через /calories\n\n"
+                    f"• Получить совет шефа через /tip\n\n"
                     f"Что тебе интересно?"
                 )
             else:
-                # Если вдруг нет имени (на всякий случай)
+                # Если вдруг нет имени
                 user_states[user_id] = "waiting_name"
                 await message.answer(
                     "Привет! 👨‍🍳 Как тебя зовут? Напиши свое имя, чтобы мы могли познакомиться."
@@ -298,10 +269,6 @@ async def process_recipe_request(message: Message, query: str, user_name: str = 
         # Получаем ответ
         response = await get_cooking_advice(query, user_name)
         
-        # Добавляем приветствие с именем если его нет в ответе
-        if user_name and f"{user_name}" not in response and "Привет" not in response[:20]:
-            response = f"{user_name}, вот рецепт, который ты просил:\n\n{response}"
-        
         # Разбиваем длинное сообщение на части
         if len(response) > 4096:
             for i in range(0, len(response), 4096):
@@ -312,28 +279,6 @@ async def process_recipe_request(message: Message, query: str, user_name: str = 
     except Exception as e:
         logging.error(f"Ошибка при получении рецепта: {e}")
         await message.answer("😔 Извини, не удалось получить рецепт. Попробуй еще раз или напиши другое блюдо.")
-
-async def get_nutrition_info(food: str) -> str:
-    """Получение информации о питательной ценности продукта"""
-    nutrition_db = {
-        "яблоко": "🍎 Яблоко (100г): 52 ккал, белки 0.3г, жиры 0.2г, углеводы 14г",
-        "банан": "🍌 Банан (100г): 96 ккал, белки 1.5г, жиры 0.2г, углеводы 22г",
-        "курица": "🍗 Куриная грудка (100г): 165 ккал, белки 31г, жиры 3.6г, углеводы 0г",
-        "рис": "🍚 Рис вареный (100г): 130 ккал, белки 2.7г, жиры 0.3г, углеводы 28г",
-        "гречка": "🌾 Гречка вареная (100г): 110 ккал, белки 4.2г, жиры 1.1г, углеводы 21г",
-        "картофель": "🥔 Картофель вареный (100г): 86 ккал, белки 1.7г, жиры 0.1г, углеводы 20г",
-        "брокколи": "🥦 Брокколи (100г): 34 ккал, белки 2.8г, жиры 0.4г, углеводы 7г",
-        "яйцо": "🥚 Яйцо куриное (1 шт): 70 ккал, белки 6г, жиры 5г, углеводы 0.6г",
-        "творог": "🥛 Творог 5% (100г): 145 ккал, белки 21г, жиры 5г, углеводы 3г",
-        "говядина": "🥩 Говядина (100г): 187 ккал, белки 19г, жиры 12г, углеводы 0г"
-    }
-    
-    food_lower = food.lower()
-    for key in nutrition_db:
-        if key in food_lower:
-            return nutrition_db[key]
-    
-    return f"🍽 Информация о {food}:\nЯ не нашел точных данных, но в среднем продукты этой категории содержат 50-200 ккал на 100г."
 
 async def main():
     """Основная функция запуска бота"""
