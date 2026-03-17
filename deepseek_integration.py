@@ -2,7 +2,7 @@ import aiohttp
 import asyncio
 from config import DEEPSEEK_API_KEY, DEEPSEEK_API_URL, DEEPSEEK_MODEL, MAX_TOKENS, TEMPERATURE
 
-# Ваш системный промт для шеф-повара
+# Ваш системный промт для шеф-повара (без упоминаний Ильи)
 SYSTEM_PROMPT = """Ты шеф-повар с 20-летним опытом и специалист по здоровому питанию. Научи меня готовить блюдо максимально полезным способом, чтобы при этом сохранить великолепный вкус.
 
 # Исходные данные
@@ -73,7 +73,7 @@ async def get_cooking_advice(user_query: str, user_name: str = None) -> str:
         return get_mock_response(user_query, user_name)
 
 def get_mock_response(user_query: str, user_name: str = None) -> str:
-    """Тестовый ответ без API (соответствует вашему промту)"""
+    """Тестовый ответ без API (соответствует вашему промту, без упоминаний Ильи)"""
     
     # Приветствие с именем если есть
     greeting = f"{user_name}, " if user_name else ""
