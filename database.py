@@ -1,7 +1,6 @@
 import sqlite3
-import json
 from datetime import datetime
-from typing import Optional, List, Dict
+from typing import Optional, Dict
 
 class Database:
     def __init__(self, db_name="chef_bot.db"):
@@ -58,6 +57,7 @@ class Database:
             
             conn.commit()
             conn.close()
+            print(f"Имя пользователя {user_id} обновлено на {name}")
         except Exception as e:
             print(f"Ошибка обновления имени: {e}")
     
